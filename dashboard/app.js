@@ -107,6 +107,47 @@
     return copy;
   }
 
+  /* ------------------------------ csv export --------------------------- */
+
+  /** One CSV field: quoted only when it carries a comma, a quote or a newline, quotes doubled. */
+  function csvCell(value) {
+    var s = value === null || value === undefined ? '' : String(value);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  /** The current view — same filter, same sort as the table — as a CSV document with the model's inputs. */
+  function csvText(rows) {
+    var head = ['rank', 'name', 'slug', 'category', 'watchlist', 'implied_value_usd', 'tvl_usd', 'change_7d',
+      'age_days', 'listed_at', 'chains', 'base', 'growth_pct', 'growth_multiplier', 'maturity_multiplier',
+      'breadth_multiplier', 'farm_plan'];
+    var lines = [head.join(',')];
+    rows.forEach(function (r) {
+      lines.push([
+        r.rank, r.name, r.slug, r.category || '', r.watchlist ? 'yes' : 'no',
+        r.implied_value_usd, r.tvl_usd, r.change_7d === null ? '' : r.change_7d,
+        r.age_days === null ? '' : r.age_days, r.listed_at || '', r.chains.join(' '),
+        r.base, r.growthPct, r.growthMultiplier, r.maturityMultiplier, r.breadthMultiplier,
+        r.farm_steps.join(' | ')
+      ].map(csvCell).join(','));
+    });
+    return lines.join('\r\n') + '\r\n';
+  }
+
+  /** Hand the visible rows to the browser as a downloaded file, then release the object URL. */
+  function downloadCsv() {
+    var rows = sortedRows(visibleRows());
+    if (rows.length === 0) return;
+    var blob = new Blob([csvText(rows)], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var link = el('a');
+    link.href = url;
+    link.download = 'token-radar-' + data.as_of + '-' + rows.length + '-rows.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+  }
+
   /* ------------------------------ rendering --------------------------- */
 
   function renderCategories() {
@@ -267,7 +308,14 @@
     math.appendChild(mathRow('implied', 'round(base·growth·maturity·breadth)', fmtFull(r.implied_value_usd), true));
     drawer.appendChild(math);
 
-    drawer.appendChild(el('div', 'section-title', 'Farm plan — what each step costs and how long it takes'));
+    var planHead = el('div', 'section-head');
+    planHead.appendChild(el('div', 'section-title', 'Farm plan — what each step costs and how long it takes'));
+    var copyBtn = el('button', 'ghost-btn', 'Copy plan');
+    copyBtn.setAttribute('type', 'button');
+    copyBtn.setAttribute('aria-label', 'Copy the numbered farm plan for ' + r.name + ' to the clipboard');
+    copyBtn.addEventListener('click', function () { copyPlan(r, copyBtn); });
+    planHead.appendChild(copyBtn);
+    drawer.appendChild(planHead);
 
     var plan = el('ol', 'plan');
     r.farm_steps.forEach(function (step, i) {
@@ -316,6 +364,7 @@
   searchEl.addEventListener('input', function () { state.query = searchEl.value; render(); });
   categoryEl.addEventListener('change', function () { state.category = categoryEl.value; render(); });
   scopeEl.addEventListener('change', function () { state.scope = scopeEl.value; render(); });
+  document.getElementById('export').addEventListener('click', downloadCsv);
 
   var ths = document.querySelectorAll('#board thead th[data-key]');
   Array.prototype.forEach.call(ths, function (th) {

@@ -81,7 +81,65 @@ for (const name of shots) {
   if (!IMAGE_NAME.test(name)) fail(`screenshots/${name}: a name is letters, digits and . _ -, 1 to 128 characters`);
 }
 
+/** Why one screenshot is not a whole 1440x900 PNG or JPEG under the caps, or null: header and trailer parsed directly. */
+function imageIssue(path: string, name: string): string | null {
+  const buf = readFileSync(path);
+  if (buf.length > SCREENSHOT_CAPS.max_bytes) return `${buf.length} bytes, over the ${SCREENSHOT_CAPS.max_bytes}-byte cap`;
+  const png = buf.length >= 24 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 && buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a;
+  if (png) {
+    const width = buf.readUInt32BE(16);
+    const height = buf.readUInt32BE(20);
+    if (buf.subarray(buf.length - 8, buf.length - 4).toString('latin1') !== 'IEND') return `${name} is a PNG with no IEND trailer, so it is cut short`;
+    return width === 1440 && height === 900 ? null : `${name} is ${width}x${height}, not 1440x900`;
+  }
+  if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    if (!(buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9)) return `${name} is a JPEG with no FFD9 trailer, so it is cut short`;
+    for (let i = 2; i + 9 < buf.length; ) {
+      if (buf[i] !== 0xff) { i++; continue; }
+      const marker = buf[i + 1]!;
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        const height = buf.readUInt16BE(i + 5);
+        const width = buf.readUInt16BE(i + 7);
+        return width === 1440 && height === 900 ? null : `${name} is ${width}x${height}, not 1440x900`;
+      }
+      i += 2 + buf.readUInt16BE(i + 2);
+    }
+    return `${name} is a JPEG with no SOF marker`;
+  }
+  return `${name} is neither a PNG nor a JPEG`;
+}
+
+/** Read back what this run wrote and check it the way the gate will: the last net before the dossier. */
+function localSelfCheck(outDir: string): void {
+  type Row = { rank: number; slug: string; implied_value_usd: number; farm_steps: string[] };
+  const rows = (JSON.parse(readFileSync(join(outDir, 'board.json'), 'utf8')) as { rows: Row[] }).rows;
+  const covered = new Set(rows.map((r) => r.slug));
+  const missing = snapshot.watchlist.filter((s) => !covered.has(s));
+  if (missing.length > 0) fail(`self-check: board.json covers ${snapshot.watchlist.length - missing.length}/${snapshot.watchlist.length} watchlist slugs; missing ${missing.slice(0, 5).join(', ')}`);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    if (r.rank !== i + 1) fail(`self-check: board.json row ${i + 1} carries rank ${r.rank}`);
+    if (i > 0 && r.implied_value_usd > rows[i - 1]!.implied_value_usd) fail(`self-check: board.json row ${i + 1} outranks row ${i} on implied value`);
+    const steps = r.farm_steps;
+    if (!Array.isArray(steps) || steps.length < 3 || steps.length > 12) fail(`self-check: ${r.slug} has ${Array.isArray(steps) ? steps.length : 0} farm steps`);
+    if (steps.some((s) => typeof s !== 'string' || s.trim().length < 20 || s.trim().length > 600)) fail(`self-check: ${r.slug} has a farm step outside 20..600 trimmed characters`);
+  }
+  const win: { RADAR?: { rows?: unknown } } = {};
+  new Function('window', readFileSync(join(outDir, 'data.js'), 'utf8'))(win);
+  const exposedRows: unknown = win.RADAR === undefined ? undefined : win.RADAR.rows;
+  if (!Array.isArray(exposedRows)) fail('self-check: data.js exposes no rows to the page');
+  if (JSON.stringify(exposedRows) !== JSON.stringify(rows)) fail('self-check: data.js rows differ from board.json');
+  for (const name of REQUIRED_SHOTS) {
+    const path = join(outDir, 'screenshots', name);
+    if (!existsSync(path)) fail(`self-check: screenshots/${name} is missing`);
+    const issue = imageIssue(path, name);
+    if (issue !== null) fail(`self-check: screenshots/${name}: ${issue}`);
+  }
+}
+
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
+localSelfCheck(out);
 const dossier = buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS });
 writeFileSync(join(out, 'dossier.json'), dossier);
 const again = buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: DASHBOARD_CAPS });
@@ -89,6 +147,7 @@ if (!Buffer.from(again).equals(Buffer.from(dossier))) fail('the dossier rebuilt 
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: read-back self-check passed (watchlist coverage, ranks, farm steps, data.js rows, 3 whole 1440x900 images)\n` +
     `token radar: wrote ${join(out, 'board.json')} (${statSync(join(out, 'board.json')).size} bytes), ${join(out, 'data.js')} (${statSync(join(out, 'data.js')).size} bytes),\n` +
     `token radar:   ${join(out, 'dashboard')} (${dashboard.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')} (${statSync(join(out, 'dossier.json')).size} bytes)\n`,
 );

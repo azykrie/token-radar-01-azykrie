@@ -359,6 +359,33 @@
     return row;
   }
 
+  /** The numbered farm plan as plain text, copied with a brief confirmation; honest when the API is absent. */
+  function copyPlan(r, btn) {
+    var text = r.name + ' (' + r.slug + ') — farm plan\n' + r.farm_steps.map(function (step, i) {
+      return (i + 1) + '. ' + step;
+    }).join('\n');
+    var reset = function (label) {
+      btn.textContent = label;
+      setTimeout(function () { btn.textContent = 'Copy plan'; }, 1800);
+    };
+    var unavailable = function () { reset('Copy unavailable'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { reset('Copied ✓'); }, unavailable);
+      return;
+    }
+    var sink = el('textarea');
+    sink.value = text;
+    sink.setAttribute('aria-hidden', 'true');
+    sink.style.position = 'fixed';
+    sink.style.opacity = '0';
+    document.body.appendChild(sink);
+    sink.select();
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+    sink.remove();
+    if (copied) reset('Copied ✓'); else unavailable();
+  }
+
   /* ------------------------------ events ------------------------------ */
 
   searchEl.addEventListener('input', function () { state.query = searchEl.value; render(); });
